@@ -16,8 +16,7 @@ jobs:
             bc bison flex libssl-dev \
             gcc-aarch64-linux-gnu \
             device-tree-compiler \
-            libelf-dev \
-            python3 repo
+            libelf-dev
 
       # 2. 下载 AOSP Clang (r498229b)
       - name: 下载 Clang
@@ -31,15 +30,13 @@ jobs:
           git sparse-checkout set clang-r498229b
           echo "CLANG_PATH=$(pwd)/clang-r498229b/bin" >> $GITHUB_ENV
 
-      # 3. 拉取内核源码
+      # 3. 拉取内核源码（git clone 直接拉）
       - name: 拉取内核源码
         run: |
-          mkdir kernel
-          cd kernel
-          repo init -u https://github.com/MiCode/Xiaomi_Kernel_OpenSource \
+          git clone https://github.com/MiCode/Xiaomi_Kernel_OpenSource \
             -b socrates-t-oss \
-            --depth=1
-          repo sync -j$(nproc) --current-branch --no-tags
+            --depth=1 \
+            kernel
 
       # 4. 查找可用的 defconfig
       - name: 查找 defconfig
