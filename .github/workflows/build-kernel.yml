@@ -1,0 +1,115 @@
+name: Build socrates kernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      # 1. 安装依赖
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex libssl-dev \
+            gcc-aarch64-linux-gnu \
+            device-tree-compiler \
+            libelf-dev \
+            python3 repo
+
+      # 2. 下载 AOSP Clang (r498229b)
+      - name: 下载 Clang
+        run: |
+          mkdir -p toolchain
+          cd toolchain
+          git clone --depth=1 --filter=blob:none --sparse \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            clang
+          cd clang
+          git sparse-checkout set clang-r498229b
+          echo "CLANG_PATH=$(pwd)/clang-r498229b/bin" >> $GITHUB_ENV
+
+      # 3. 拉取内核源码
+      - name: 拉取内核源码
+        run: |
+          mkdir kernel
+          cd kernel
+          repo init -u https://github.com/MiCode/Xiaomi_Kernel_OpenSource \
+            -b socrates-t-oss \
+            --depth=1
+          repo sync -j$(nproc) --current-branch --no-tags
+
+      # 4. 查找可用的 defconfig
+      - name: 查找 defconfig
+        working-directory: kernel
+        run: |
+          echo "可用的 defconfig："
+          find arch/arm64/configs -name "*.defconfig" | sort
+
+      # 5. 编译内核
+      - name: 编译内核
+        working-directory: kernel
+        run: |
+          export PATH="${{ env.CLANG_PATH }}:/usr/bin:$PATH"
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+
+          # 尝试使用 socrates 专用配置，如果不存在则回退到 gki_defconfig
+          if [ -f "arch/arm64/configs/socrates_defconfig" ]; then
+            make socrates_defconfig
+          elif [ -f "arch/arm64/configs/vendor/socrates_defconfig" ]; then
+            make vendor/socrates_defconfig
+          else
+            make gki_defconfig
+          fi
+
+          make -j$(nproc) Image.gz-dtb \
+            KCFLAGS="-Wno-error=misleading-indentation -Wno-error=maybe-uninitialized" \
+            2>&1 | tee build.log
+
+      # 6. 打包 AnyKernel3
+      - name: 打包 AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3
+          cp kernel/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+
+          cat > AnyKernel3/anykernel.sh << 'EOF'
+          #!/sbin/sh
+          properties() { '
+          kernel.string=Kernel for Xiaomi K60 Pro (socrates)
+          do.devicecheck=1
+          device.name1=socrates
+          device.name2=k60pro
+          do.cleanup=1
+          '; }
+          BLOCK=/dev/block/bootdevice/by-name/boot;
+          is_slot_device=auto;
+          no_block_display=1;
+          . tools/ak3-core.sh;
+          split_boot;
+          flash_boot;
+          EOF
+
+          cd AnyKernel3
+          rm -rf .git .github modules patch ramdisk LICENSE README.md
+          zip -r9 $GITHUB_WORKSPACE/k60pro-kernel.zip .
+
+      # 7. 上传产物
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: k60pro-kernel
+          path: |
+            k60pro-kernel.zip
+            kernel/arch/arm64/boot/Image.gz-dtb
+            kernel/build.log
